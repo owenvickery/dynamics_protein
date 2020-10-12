@@ -70,14 +70,27 @@ cmaps = [('Perceptually Uniform Sequential', [
             'gist_rainbow', 'rainbow', 'jet', 'nipy_spectral', 'gist_ncar'])]
 
 
-
 parser = argparse.ArgumentParser(description='Converts CG representation into atomistic', epilog='Enjoy the program and best of luck!', allow_abbrev=True)
-parser.add_argument('-c', help='coarse grain coordinates',metavar='pdb/gro',type=str)
-parser.add_argument('-name', help='additional fragment library location',metavar='fragments folder',type=str, default='')
+parser.add_argument('-c', help='coordinates to write rmsf to',metavar='pdb/gro',type=str)
+parser.add_argument('-s', help='rmsf, rmsd structure coordinates',metavar='pdb/gro',type=str)
+parser.add_argument('-n', help='index location',metavar='pdb/gro',type=str)
+parser.add_argument('-group', help='group to run on',metavar='4',type=str, default = '4' )
+parser.add_argument('-run', help='xtc file name e.g. "abc-r"',type=str, default='')
+parser.add_argument('-b', help='start of repeats',type=int, default=1)
+parser.add_argument('-e', help='end of repeats',type=int, default=3)
 parser.add_argument('-reset', help='resets residue numbers', action='store_true')
 args = parser.parse_args()
 options = vars(args)
 
+def gromacs(cmd):
+    print('\nrunning gromacs: \n '+cmd)
+    output = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    err, out = output.communicate()
+    exitcode = output.returncode
+    out=out.decode("utf-8")
+    checks = open('gromacs_outputs_out', 'a')
+    checks.write(out)
+    return out
 
 def pdbatom(line):
 ### get information from pdb file
@@ -98,6 +111,12 @@ def ave(a, n) :
     ret[n:] = ret[n:] - ret[:-n]
     return ret[n - 1:] / n
 
+if args.run:
+    for repeat in range(args.b, args.e+1):
+        gromacs('echo '+args.group+' '+args.group+' | gmx rms -f '+args.run+str(repeat)+'.xtc -s '+args.s+' -o rmsd-r'+str(repeat)+'.xvg -n '+args.n)
+        gromacs('echo '+args.group+' | gmx rmsf -f '+args.run+str(repeat)+'.xtc -s '+args.s+' -fit -res -o rmsf-r'+str(repeat)+'.xvg -n '+args.n)
+
+
 atoms={}
 with open(args.c, 'r') as pdb_input:
     resid_prev = -1
@@ -114,32 +133,37 @@ with open(args.c, 'r') as pdb_input:
                 atoms[resid]={}
                 resid_prev=line_sep['residue_id']
             atoms[resid][line_sep['atom_number']]=line_sep
-# all_xvgs=np.array([])
+
 xvg=[]
-for repeat in range(1, 4):
+for repeat in range(args.b, args.e+1):
     xvg.append([])
-    with open(args.name+'rmsf-r'+str(repeat)+'.xvg', 'r') as xvg_input:
+    with open('rmsf-r'+str(repeat)+'.xvg', 'r') as xvg_input:
         for line_nr, line in enumerate(xvg_input.readlines()):
             if len(line) > 0:
                 if line[0] not in ['@','#']:
-                    xvg[repeat-1].append(float(line.split()[1]))
+                    xvg[len(xvg)-1].append(float(line.split()[1])*10)
 mean=np.mean(xvg, axis=0)
 
-rmsd, time=[],[]
-for repeat in range(1, 4):
+rmsd, time, length=[],[], []
+for repeat in range(args.b, args.e+1):
     rmsd.append([])
     time.append([])
-    with open(args.name+'rmsd-r'+str(repeat)+'.xvg', 'r') as xvg_input:
+    with open('rmsd-r'+str(repeat)+'.xvg', 'r') as xvg_input:
         for line_nr, line in enumerate(xvg_input.readlines()):
             if len(line) > 0:
                 if line[0] not in ['@','#']:
-                    time[repeat-1].append(float(line.split()[0])/1000)
-                    rmsd[repeat-1].append(float(line.split()[1]))
+                    time[len(rmsd)-1].append(float(line.split()[0])/1000)
+                    rmsd[len(rmsd)-1].append(float(line.split()[1]))
+    length.append(len(rmsd[len(rmsd)-1]))
+
+for repeat in range(len(rmsd)):
+    rmsd[repeat]=rmsd[repeat][:min(length)]
+    time[repeat]=time[repeat][:min(length)]
 rmsd_mean=np.mean(rmsd, axis=0)
 time_mean=np.mean(time, axis=0)
 
 
-pdb_output = create_pdb(args.name+'rmsf_mean.pdb')
+pdb_output = create_pdb('rmsf_mean.pdb')
 pdbline = "ATOM  %5d %4s %4s%1s%4d    %8.3f%8.3f%8.3f%6.2f%6.2f"
 chain_sep=[[]]
 residue_id=[[]]
@@ -163,8 +187,8 @@ atoms[residue][at]['x'],atoms[residue][at]['y'],atoms[residue][at]['z'],1,mean[r
 
 
 
-yl=0.6
-yls=0.2
+yl=6
+yls=2
 plt.figure(1, figsize=(15,15))
 plt.title('WaaL apo',  fontproperties=font1, fontsize=30,y=1.1)
 for i in range(len(chain_sep)):
@@ -175,10 +199,13 @@ for i in range(len(chain_sep)):
     else:
         xtick_int = 50
     plt.subplot(3,1,1)
-    plt.plot(residue_id[i], xvg[0], color='green',linewidth=2, alpha=0.6, label='repeat 1')
-    plt.plot(residue_id[i], xvg[1], color='blue',linewidth=2, alpha=0.6, label='repeat 2')
-    plt.plot(residue_id[i], xvg[2], color='red',linewidth=2, alpha=0.6, label='repeat 3')
-    plt.plot(residue_id[i], chain_sep[i], color='black',linewidth=4, label='average')
+    if len(xvg) >= 1:
+        plt.plot(np.array(residue_id[i])+5, xvg[0], color='green',linewidth=2, alpha=0.6, label='repeat 1')
+    if len(xvg) >= 2:
+        plt.plot(np.array(residue_id[i])+5, xvg[1], color='blue',linewidth=2, alpha=0.6, label='repeat 2')
+    if len(xvg) >= 3:
+        plt.plot(np.array(residue_id[i])+5, xvg[2], color='red',linewidth=2, alpha=0.6, label='repeat 3')
+    plt.plot(np.array(residue_id[i])+5, chain_sep[i], color='black',linewidth=4, label='average')
     if np.round(min(residue_id[i]), -2) == 0 :
         min_resid = 0
     else:
@@ -188,7 +215,7 @@ for i in range(len(chain_sep)):
     else:
         plt.xticks(np.arange(min_resid, np.round(max(residue_id[i]), -2)+50,xtick_int), fontproperties=font1,  fontsize=30)#
 
-    plt.yticks(np.arange(0, 1.21,yls), fontproperties=font1,  fontsize=30)#
+    plt.yticks(np.arange(0, 1000,yls), fontproperties=font1,  fontsize=30)#
     plt.ylim(0,yl)
     plt.xlim(np.round(min(residue_id[i]), -1)-xtick_int, np.round(max(residue_id[i]), -1)+xtick_int-0.1)
     # if i+1 != len(chain_sep):
@@ -208,37 +235,40 @@ plt.xlabel('Residue', fontproperties=font2,fontsize=30)
 
 
 # plt.figure(2, figsize=(15,15))
-for i in range(len(chain_sep)):
-    plt.subplot(3,1,2)
-    if np.round(max(time_mean)) < 25:
-        xtick_int = 5 
-    elif np.round(max(time_mean)) < 100:
-        xtick_int = 25
-    else:
-        xtick_int = 50
-    plt.plot(ave(time_mean, 10), ave(rmsd[0],10), color='green',linewidth=2, alpha=0.6)
-    plt.plot(ave(time_mean, 10), ave(rmsd[1],10), color='blue',linewidth=2, alpha=0.6)
-    plt.plot(ave(time_mean, 10), ave(rmsd[2],10), color='red',linewidth=2, alpha=0.6)
-    plt.plot(ave(time_mean, 10), ave(rmsd_mean,10), color='black',linewidth=4)
-    if i+1 != 1:
-        plt.xticks(np.arange(0, np.round(np.max(ave(time_mean, 10)), -2)+50,xtick_int), fontproperties=font1,  fontsize=30)#
-    else:
-        plt.xticks(np.arange(0, np.round(np.max(ave(time_mean, 10)), -2)+50,xtick_int), fontproperties=font1,  fontsize=30)#
+# for i in range(len(chain_sep)):
+#     plt.subplot(3,1,2)
+#     if np.round(max(time_mean)) < 25:
+#         xtick_int = 5 
+#     elif np.round(max(time_mean)) < 100:
+#         xtick_int = 25
+#     else:
+#         xtick_int = 50
+#     if len(rmsd) >= 1:
+#         plt.plot(ave(time_mean, 10), ave(rmsd[0],10), color='green',linewidth=2, alpha=0.6)
+#     if len(rmsd) >= 2:
+#         plt.plot(ave(time_mean, 10), ave(rmsd[1],10), color='blue',linewidth=2, alpha=0.6)
+#     if len(rmsd) >= 3:
+#         plt.plot(ave(time_mean, 10), ave(rmsd[2],10), color='red',linewidth=2, alpha=0.6)
+#     plt.plot(ave(time_mean, 10), ave(rmsd_mean,10), color='black',linewidth=4)
+#     if i+1 != 1:
+#         plt.xticks(np.arange(0, np.round(np.max(ave(time_mean, 10)), -2)+50,xtick_int), fontproperties=font1,  fontsize=30)#
+#     else:
+#         plt.xticks(np.arange(0, np.round(np.max(ave(time_mean, 10)), -2)+50,xtick_int), fontproperties=font1,  fontsize=30)#
 
-    plt.yticks(np.arange(0, 1.21,yls), fontproperties=font1,  fontsize=30)#
-    plt.ylim(0,yl)
-    plt.xlim(np.round(min(time_mean), -1)-10, np.round(max(time_mean), -1)+10)
-    # if i+1 != len(chain_sep):
-    #   plt.tick_params(axis='both', which='major', width=3, length=5, labelsize=30, direction='in', pad=10, right=False, top=False,labelbottom=False)
-    # else:
-    plt.tick_params(axis='both', which='major', width=3, length=5, labelsize=30, direction='in', pad=10, right=False, top=False)
+#     plt.yticks(np.arange(0, 1.21,yls), fontproperties=font1,  fontsize=30)#
+#     plt.ylim(0,yl)
+#     plt.xlim(np.round(min(time_mean), -1)-10, np.round(max(time_mean), -1)+10)
+#     # if i+1 != len(chain_sep):
+#     #   plt.tick_params(axis='both', which='major', width=3, length=5, labelsize=30, direction='in', pad=10, right=False, top=False,labelbottom=False)
+#     # else:
+#     plt.tick_params(axis='both', which='major', width=3, length=5, labelsize=30, direction='in', pad=10, right=False, top=False)
 
-    plt.ylabel('RMSD (nm)', fontproperties=font2,fontsize=30) 
-plt.xlabel('time (ns)', fontproperties=font2,fontsize=30) 
+#     plt.ylabel('RMSD (nm)', fontproperties=font2,fontsize=30) 
+# plt.xlabel('time (ns)', fontproperties=font2,fontsize=30) 
 
 plt.subplots_adjust( top=0.9, bottom=0.12, left=0.1,right=0.991, wspace=0.3, hspace=0.3)
 
-plt.savefig(args.name+'convergence.png', dpi=300)
+plt.savefig('convergence.png', dpi=300)
 
 
 
@@ -249,8 +279,10 @@ for i in range(len(chain_sep)):
         xtick_int = 5 
     elif np.round(max(residue_id[i])) < 50:
         xtick_int = 25
-    else:
+    elif np.round(max(residue_id[i])) < 500:
         xtick_int = 50
+    else:
+        xtick_int = 100
     plt.subplot(3,1,i+1)
     plt.plot(residue_id[i], chain_sep[i], color='black',linewidth=4)
     if np.round(min(residue_id[i]), -2) == 0 :
@@ -303,4 +335,5 @@ plt.xlabel('time (ns)', fontproperties=font2,fontsize=30)
 
 plt.subplots_adjust( top=0.968, bottom=0.12, left=0.1,right=0.991, wspace=0.3, hspace=0.3)
 
-plt.savefig(args.name+'convergence_mean.png', dpi=300)
+plt.savefig('convergence_mean.png', dpi=300)
+
